@@ -1,0 +1,32 @@
+# Variables de entorno y credenciales
+.env
+.env.*
+!.env.example
+
+# Entornos virtuales Python
+.venv/
+venv/
+env/
+
+# Caché de Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Caché de pruebas
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Cobertura de pruebas
+.coverage
+htmlcov/
+
+# Configuración local de Claude
+.claude/settings.local.json
+
+# Instrucciones locales de Claude
+CLAUDE.md
+
+# Consigna original de Zoco
+_referencia/
