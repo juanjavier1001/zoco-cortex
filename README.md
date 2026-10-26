@@ -58,7 +58,7 @@ Las dependencias son `numpy` y `pytest`. Todas las llamadas a la API de OpenAI s
 cp .env.example .env
 ```
 
-Editar `.env` con los valores reales:
+Editar `.env` con los valores reales. `main.py` y `buscador.py` cargan `.env` automáticamente al iniciar, sin necesidad de exportar variables manualmente:
 
 ```env
 # Clave de la API de OpenAI (requerida para embeddings y LLM)
@@ -77,7 +77,7 @@ SUPERVISOR_PIN=
 
 ## Estructura del proyecto
 
-Estructura actual del repositorio. Los módulos de código fuente, tests y resultados de evaluación se incorporarán progresivamente en las siguientes ramas.
+Estructura del repositorio completo:
 
 ```
 zoco-cortex/
@@ -108,7 +108,7 @@ zoco-cortex/
 │   ├── test_buscador.py    # Tests del buscador RAG (28 tests)
 │   ├── test_estados.py     # Tests de la máquina de estados (66 tests)
 │   ├── test_agente.py      # Tests del agente (23 tests)
-│   ├── test_evaluacion.py  # Tests de evaluación determinista (30 tests)
+│   ├── test_evaluacion.py  # Tests de evaluación determinista (31 tests)
 │   └── test_integracion.py # Tests de integración (22 tests)
 │
 ├── resultados/

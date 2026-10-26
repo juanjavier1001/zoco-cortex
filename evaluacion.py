@@ -129,7 +129,7 @@ def _run_caso(fn):
 # ==========================================
 # ETAPA 3: CASOS DE EVALUACION
 # ==========================================
-# 17 conversaciones simuladas multiturno.
+# 18 conversaciones simuladas multiturno.
 # Cada funcion:
 #   - limpia el estado al inicio
 #   - ejecuta herramientas con instrumentacion

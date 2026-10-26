@@ -19,6 +19,26 @@ CACHE_QS   = RAIZ / "cache" / "embeddings_preguntas.json"
 QUESTIONS  = RAIZ / "questions.jsonl"
 RESULTADOS = RAIZ / "resultados" / "evaluacion.json"
 MODELO     = "text-embedding-3-small"
+
+
+def _cargar_dotenv():
+    """Carga variables desde .env sin sobreescribir las ya definidas en el entorno."""
+    env_path = RAIZ / ".env"
+    if not env_path.exists():
+        return
+    for linea in env_path.read_text(encoding="utf-8").splitlines():
+        linea = linea.strip()
+        if not linea or linea.startswith("#") or "=" not in linea:
+            continue
+        clave, _, valor = linea.partition("=")
+        clave = clave.strip()
+        valor = valor.strip().strip('"').strip("'")
+        if clave and not os.environ.get(clave):
+            os.environ[clave] = valor
+
+
+_cargar_dotenv()
+
 API_KEY    = os.getenv("OPENAI_API_KEY")
 
 K1, B, RRF_K = 1.5, 0.75, 60
