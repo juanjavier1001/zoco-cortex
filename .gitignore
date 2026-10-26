@@ -28,5 +28,8 @@ htmlcov/
 # Instrucciones locales de Claude
 CLAUDE.md
 
+# Caché de embeddings (generado automáticamente por buscador.py)
+cache/
+
 # Consigna original de Zoco
 _referencia/
