@@ -387,28 +387,88 @@ def test_integracion_agente_importa_estados():
     assert "[ESTADO:HUMAN]" in r
 
 
-@pytest.mark.skip(reason="feature/evaluacion pendiente: requiere evaluacion.py")
 def test_integracion_evaluacion_usa_agente_y_estados():
-    """evaluacion llama a agente.ejecutar_herramienta y estados."""
-    pass
+    """evaluacion usa agente.ejecutar_herramienta y estados para limpiar el estado."""
+    import evaluacion
+
+    # _limpiar_estado debe reiniciar la maquina de estados y la memoria de reclamos
+    estadospb.transicionar("low_confidence", "sistema")
+    agentepb._reclamos_registrados["test_hash"] = "REC-9999"
+
+    evaluacion._limpiar_estado()
+
+    assert estadospb.get_estado() == "AUTO", "limpiar_estado debe reiniciar a AUTO"
+    assert len(agentepb._reclamos_registrados) == 0, "limpiar_estado debe vaciar reclamos"
+
+    # Verificar que evaluacion.agentepb es el mismo modulo que agente
+    assert evaluacion.agentepb is agentepb, "evaluacion debe usar el mismo modulo agente"
+    assert evaluacion.estadospb is estadospb, "evaluacion debe usar el mismo modulo estados"
+
+    # Verificar que los 18 casos estan definidos
+    assert len(evaluacion.CASOS) == 18, "evaluacion debe tener 18 casos"
 
 
-@pytest.mark.skip(reason="feature/evaluacion pendiente: requiere evaluacion_llm.py")
 def test_integracion_evaluacion_llm_tiene_16_casos():
     """evaluacion_llm.py debe tener 16 casos incluido LC16."""
-    pass
+    import evaluacion_llm
+
+    assert len(evaluacion_llm.CASOS_LLM) == 16, (
+        f"evaluacion_llm debe tener 16 casos, tiene {len(evaluacion_llm.CASOS_LLM)}"
+    )
+
+    ids = [c["id"] for c in evaluacion_llm.CASOS_LLM]
+    assert "LC16" in ids, "CASOS_LLM debe incluir LC16 (prompt injection en herramienta)"
+
+    # IDs únicos
+    assert len(ids) == len(set(ids)), "Todos los IDs de casos LLM deben ser únicos"
 
 
-@pytest.mark.skip(reason="feature/evaluacion pendiente: requiere evaluacion.py y evaluacion_llm.py")
 def test_integracion_no_circular_imports():
     """Los cinco modulos pueden importarse sin errores de import circular."""
-    pass
+    # Si hay imports circulares, alguna de estas importaciones lanzara ImportError
+    import buscador as _buscador
+    import estados as _estados
+    import agente as _agente
+    import evaluacion as _evaluacion
+    import evaluacion_llm as _evaluacion_llm
+
+    # Verificar que cada modulo exporta lo que los otros esperan
+    assert hasattr(_agente, "ejecutar_herramienta")
+    assert hasattr(_agente, "procesar_turno")
+    assert hasattr(_estados, "get_estado")
+    assert hasattr(_estados, "transicionar")
+    assert hasattr(_buscador, "buscar")
+    assert hasattr(_evaluacion, "CASOS")
+    assert hasattr(_evaluacion_llm, "CASOS_LLM")
 
 
-@pytest.mark.skip(reason="feature/evaluacion pendiente: requiere evaluacion.py")
-def test_integracion_reclamos_originales_intactos():
-    """Los tests de evaluacion no deben tocar reclamos.json original."""
-    pass
+def test_integracion_reclamos_originales_intactos(tmp_path, monkeypatch):
+    """Los casos de evaluacion usan archivos temporales; reclamos.json original no se toca."""
+    import json
+    import evaluacion
+
+    # Apuntar RECLAMOS_PATH del agente a un archivo temporal
+    rp_evaluacion = tmp_path / "reclamos_eval.json"
+    monkeypatch.setattr(agentepb, "RECLAMOS_PATH", rp_evaluacion)
+
+    # El archivo reclamos.json original del proyecto
+    reclamos_original = Path(__file__).parent.parent / "reclamos.json"
+    contenido_antes = reclamos_original.read_text(encoding="utf-8") if reclamos_original.exists() else None
+
+    # Ejecutar un caso que crea reclamos (usa archivos temporales propios)
+    evaluacion.c05()
+
+    # El archivo original no fue modificado
+    if contenido_antes is not None:
+        contenido_despues = reclamos_original.read_text(encoding="utf-8")
+        assert contenido_antes == contenido_despues, (
+            "reclamos.json original fue modificado durante la evaluacion"
+        )
+
+    # El archivo temporal del test tampoco fue tocado (c05 crea su propio tmp)
+    assert not rp_evaluacion.exists() or json.loads(rp_evaluacion.read_text()) == [], (
+        "El monkeypatch de RECLAMOS_PATH no deberia haber recibido escrituras de c05"
+    )
 
 
 # ==========================================
