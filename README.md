@@ -91,6 +91,8 @@ zoco-cortex/
 │
 ├── buscador.py             # Buscador RAG (Parte 1)
 ├── estados.py              # Máquina de estados IA-humano (Parte 3)
+├── agente.py               # Agente conversacional (Parte 2)
+├── main.py                 # Punto de entrada — ejecuta el agente
 │
 ├── questions.jsonl         # 20 preguntas de evaluación RAG
 ├── ventas.json             # Dataset de ventas ficticias (35 días)
@@ -101,7 +103,9 @@ zoco-cortex/
 │
 ├── tests/
 │   ├── test_buscador.py    # Tests del buscador RAG (28 tests)
-│   └── test_estados.py     # Tests de la máquina de estados (57 tests)
+│   ├── test_estados.py     # Tests de la máquina de estados (66 tests)
+│   ├── test_agente.py      # Tests del agente (23 tests)
+│   └── test_integracion.py # Tests de integración (18 passed, 4 skip pendientes de feature/evaluacion)
 │
 └── docs/
     └── DOC-01.md … DOC-12.md   # 12 documentos de ZocoTickets para el buscador
@@ -113,7 +117,7 @@ zoco-cortex/
 |--------------------|------------------------------------------------------------------|-------------|
 | `feature/rag`      | `buscador.py`, `tests/test_buscador.py`, documentación RAG      | ✓ integrado |
 | `feature/estados`  | `estados.py`, `tests/test_estados.py`, documentación            | ✓ integrado |
-| `feature/agente`   | `agente.py`, `main.py`, `tests/test_agente.py`, documentación   | pendiente   |
+| `feature/agente`   | `agente.py`, `main.py`, `tests/test_agente.py`, `tests/test_integracion.py` | ✓ integrado |
 | `feature/evaluacion` | `evaluacion.py`, resultados, conclusiones                      | pendiente   |
 
 ---
@@ -365,7 +369,7 @@ python -m pytest tests/test_estados.py -v
 python -m pytest -v
 ```
 
-**57 tests pasan, 9 tests de integración con el agente quedan marcados como `skip`** hasta que `agente.py` sea incorporado en `feature/agente`.
+**66 tests pasan.** Los 9 tests de integración con el agente (`@_sin_agente`) se activaron al incorporar `agente.py` en `feature/agente`.
 
 ### Decisiones técnicas
 
@@ -376,3 +380,172 @@ python -m pytest -v
 **Actor como string controlado:** el campo `actor` en el historial es un string libre, pero la autorización de `supervisor_unblock` está implementada mediante `_ACTORES_REQUERIDOS` en código. En producción debe estar respaldado por autenticación real; la verificación por PIN (`SUPERVISOR_PIN`) es la capa de control disponible en la demo interactiva.
 
 **Estado global de módulo:** la máquina usa variables de módulo (`_estado_actual`, `_historial`, `_fuera_de_horario`). `reset_estado()` permite reiniciar entre tests sin instanciar objetos. La integración con el agente usa el módulo directamente mediante imports, siguiendo el patrón del proyecto.
+
+---
+
+## Agente conversacional
+
+El módulo `agente.py` implementa el agente conversacional de ZocoTickets. Es el módulo central del sistema: integra el buscador RAG (`buscador.py`), la máquina de estados (`estados.py`) y las políticas de seguridad garantizadas en código.
+
+### Arquitectura del agente
+
+```
+input del usuario
+    ↓
+estados.puede_responder()     — verifica si el agente está activo en el estado actual
+    ↓
+procesar_turno(mensajes)
+    ├── _post_openai()          — llamada al LLM (gpt-4o-mini) con tool calling
+    ├── ejecutar_herramienta()  — único punto de entrada para todas las herramientas
+    │     ├── 🔒 lista blanca de herramientas
+    │     ├── 🔒 verifica estado IA-humano (estados.py)
+    │     ├── 🔒 valida argumentos
+    │     └── llama a buscar_documentacion / consultar_ventas / crear_reclamo
+    └── (repite si el LLM solicita más tool calls)
+    ↓
+respuesta final
+    ↓ (solo en SUGGEST)
+🔒 _aprobar_borrador_operador()   — operador aprueba antes de enviar al cliente
+```
+
+### Integración con el buscador RAG
+
+El agente llama a `buscador.buscar()` con `estrategia="bm25"` y `top_k=3`. BM25 tiene el mejor MRR en las métricas de evaluación del proyecto. El resultado se formatea como contexto con ID del documento, tipo, estado de vigencia y texto truncado a 500 caracteres. El agente tiene instrucción explícita de citar `[DOC-XX]` en cada respuesta basada en documentación.
+
+### Integración con la máquina de estados
+
+El agente consulta `estados.py` en dos puntos críticos:
+
+| Punto | Función | Efecto |
+|-------|---------|--------|
+| Inicio de turno | `estados.puede_responder()` | Si devuelve `False`, el agente no responde ni llama a la API |
+| Dentro de `ejecutar_herramienta()` | `estados.puede_ejecutar_herramienta()` | Verifica si la herramienta está habilitada en el estado actual |
+| En SUGGEST | `estados.requiere_aprobacion_operador()` | `crear_reclamo` necesita aprobación del operador antes de ejecutarse |
+| Fin de turno | `estados.genera_borrador()` | La respuesta es un borrador que el operador debe aprobar |
+
+### Herramientas disponibles
+
+| Herramienta           | Descripción                                        | Estados habilitados           |
+|-----------------------|----------------------------------------------------|-------------------------------|
+| `buscar_documentacion`| Busca en los documentos DOC-01…DOC-12 con BM25     | AUTO, SUGGEST                 |
+| `consultar_ventas`    | Devuelve entradas/bruto/devoluciones/neto de un día | AUTO, SUGGEST                |
+| `crear_reclamo`       | Registra un reclamo con confirmación e idempotencia | AUTO; SUGGEST (con aprobación)|
+
+Toda herramienta fuera de esta lista es rechazada con `[ERROR]` por la lista blanca de `ejecutar_herramienta()`.
+
+### Contexto multiturno
+
+El historial de mensajes (`mensajes: list[dict]`) se acumula entre turnos. El LLM recibe el historial completo en cada llamada: mensajes del usuario, respuestas del asistente y resultados de herramientas anteriores. Esto permite preguntas de seguimiento sin re-especificar el contexto.
+
+### Políticas de seguridad (garantizadas en código)
+
+#### 🔒 Lista blanca de herramientas
+
+`ejecutar_herramienta()` verifica el nombre contra `_HERRAMIENTAS_DISPONIBLES` antes de cualquier otra acción. Nombres no definidos, vacíos o con inyección de código son rechazados con `[ERROR]` sin importar cómo llegaron.
+
+#### 🔒 Confirmación explícita de reclamos
+
+`crear_reclamo()` llama a `_confirmar_en_consola()` antes de registrar nada. Esta función lee de `stdin` directamente: si el usuario no escribe `"si"` (o equivalente), el reclamo no se registra, aunque el LLM haya solicitado la herramienta o el usuario lo haya dicho anteriormente en el chat.
+
+#### 🔒 Idempotencia
+
+Antes del registro, `crear_reclamo()` calcula `SHA-256(motivo|descripcion)` y verifica `_reclamos_registrados`. Si el hash ya existe (mismo reclamo ya registrado), devuelve el ID existente sin pedir confirmación ni escribir en disco.
+
+La idempotencia persiste entre reinicios: `_cargar_reclamos()` reconstruye `_reclamos_registrados` desde `reclamos.json` al arrancar.
+
+#### 🔒 Verificación de supervisor (BLOCKED → AUTO)
+
+El comando `!unblock` llama a `_verificar_supervisor()` antes de invocar `estados.transicionar()`. Si `SUPERVISOR_PIN` no está configurado o el PIN ingresado no coincide, el desbloqueo es rechazado y el estado permanece `BLOCKED`.
+
+#### 🔒 Aprobación del operador en SUGGEST
+
+En estado `SUGGEST`, `crear_reclamo` requiere `_aprobar_operador_reclamo()` antes de ejecutarse. Adicionalmente, la respuesta completa del agente pasa por `_aprobar_borrador_operador()` antes de enviarse al cliente.
+
+#### 🔒 Restricciones de HUMAN y BLOCKED
+
+`procesar_turno()` retorna `""` sin llamar a la API cuando el estado es `HUMAN` o `BLOCKED`. Esto está implementado en código; no depende del system prompt ni de instrucciones al LLM.
+
+#### 🔒 Protección contra prompt injection
+
+Los resultados de herramientas se tratan como datos (strings pasados al LLM como mensajes de rol `tool`), no como instrucciones ejecutadas por Python. El system prompt refuerza que cualquier instrucción dentro de un resultado de herramienta es texto del documento, no una orden.
+
+### Manejo de errores
+
+| Tipo de error      | Manejo                                                           |
+|--------------------|------------------------------------------------------------------|
+| `TimeoutError`     | Capturado en `ejecutar_herramienta()` → `[ERROR] La herramienta no está disponible...` |
+| `ConnectionError`  | Igual que `TimeoutError`                                         |
+| `OSError`          | `[ERROR] No se pudo acceder al archivo de datos...`              |
+| Argumento inválido | `[ERROR]` descriptivo antes de llamar a la herramienta           |
+| `HTTPError` de API | Capturado en `main()` → mensaje al usuario sin detalles técnicos |
+| Excepción genérica | Capturado en `main()` y en `ejecutar_herramienta()` → mensaje al usuario |
+
+Los mensajes de error no exponen tracebacks, claves de API ni detalles de implementación.
+
+### Manejo de fechas ambiguas
+
+El agente tiene instrucción en el system prompt y en el schema de `consultar_ventas` de pedir la fecha exacta en formato `YYYY-MM-DD` antes de llamar a la herramienta si el usuario usa expresiones relativas (`"ayer"`, `"el lunes"`) o ambiguas (`"03/04"`). La validación adicional `_validar_fecha()` rechaza en código cualquier fecha que no cumpla el regex `\d{4}-\d{2}-\d{2}`.
+
+### Comandos de operador
+
+Los comandos `!` se procesan en `main()` antes de llegar al LLM:
+
+| Comando     | Evento disparado         | Actor    |
+|-------------|--------------------------|----------|
+| `!takeover` | `operator_takeover`      | operador |
+| `!release`  | `operator_release`       | operador |
+| `!abuse`    | `abuse_detected`         | sistema  |
+| `!lowconf`  | `low_confidence`         | sistema  |
+| `!fuera`    | `out_of_hours_started`   | sistema  |
+| `!estado`   | (muestra estado actual)  | —        |
+| `!unblock`  | `supervisor_unblock`     | supervisor (requiere PIN) |
+
+### Cómo ejecutar el agente
+
+```bash
+# Activar entorno virtual
+.venv\Scripts\Activate.ps1         # Windows PowerShell
+source .venv/bin/activate          # Linux/macOS
+
+# Cargar variables de entorno
+# Windows (PowerShell):
+$env:OPENAI_API_KEY = "<tu-clave>"
+$env:SUPERVISOR_PIN = "<pin-supervisor>"    # opcional
+$env:TOOL_FAILURE_RATE = "0.0"             # opcional
+
+# Ejecutar el agente
+python main.py
+```
+
+Al iniciar, el agente muestra el estado actual, el modelo y el estado del PIN de supervisor. Los comercios interactúan por consola. El operador puede usar comandos `!` en cualquier momento.
+
+### Cómo ejecutar los tests del agente
+
+```bash
+# Solo tests del agente
+python -m pytest tests/test_agente.py -v
+
+# Tests de integración (agente + estados + buscador)
+python -m pytest tests/test_integracion.py -v
+
+# Todos los tests del proyecto
+python -m pytest -v
+```
+
+Ningún test realiza llamadas reales a OpenAI. Los tests que dependen del LLM usan `unittest.mock.patch` sobre `agente._post_openai`.
+
+**23 tests pasan en `test_agente.py`. 18 pasan en `test_integracion.py`, 4 marcados `skip` (requieren módulos de `feature/evaluacion`).**
+
+### Decisiones técnicas del agente
+
+**Tool calling nativo de OpenAI en lugar de parsing de respuestas:** el agente usa `tool_choice="auto"` con el schema JSON oficial. Esto delega al LLM la decisión de cuándo usar cada herramienta y con qué argumentos, reduciendo la lógica de parsing en Python.
+
+**`urllib.request` en lugar del SDK de OpenAI:** consistente con el buscador, la prueba técnica valora las implementaciones desde cero con dependencias mínimas. Toda la comunicación con la API es explícita y auditable.
+
+**Confirmación por `stdin`, no por el LLM:** la política de confirmación de reclamos lee directamente de `input()`, fuera del flujo de mensajes del LLM. Esto hace la política determinista: ningún prompt puede eludirla.
+
+**Idempotencia por hash en memoria:** `SHA-256(motivo|descripcion)` como clave permite verificar duplicados en O(1) sin consultar el disco en cada llamada. La recarga desde disco en `_cargar_reclamos()` garantiza persistencia entre sesiones.
+
+**BM25 como estrategia del agente:** la evaluación comparativa de estrategias muestra que BM25 tiene mejor MRR que la búsqueda vectorial sola en el corpus de ZocoTickets (dominado por términos técnicos específicos). La estrategia híbrida tiene mejor Recall@3 pero requiere llamadas a la API en cada consulta; BM25 es más rápido y económico para uso en producción.
+
+**Protección contra prompt injection documentada con limitaciones:** el sistema previene inyecciones deterministas (Python no ejecuta instrucciones de los resultados de herramientas). La robustez frente a inyecciones indirectas que influyen al LLM es una limitación conocida, verificada parcialmente por los tests de evaluación LLM (LC09).
