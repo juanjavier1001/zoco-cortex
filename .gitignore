@@ -28,5 +28,11 @@ htmlcov/
 # Instrucciones locales de Claude
 CLAUDE.md
 
+# Caché de embeddings — los archivos .json se incluyen en el repo
+# para que los tests pasen en un clone fresco sin necesidad de API key.
+cache/*
+!cache/embeddings.json
+!cache/embeddings_preguntas.json
+
 # Consigna original de Zoco
 _referencia/
