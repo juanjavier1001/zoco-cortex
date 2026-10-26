@@ -14,6 +14,7 @@ Prueba técnica — Pasante de IA, ZOCO Servicios de Pago.
 - [Estructura del proyecto](#estructura-del-proyecto)
 - [Datos y documentos](#datos-y-documentos)
 - [Buscador RAG](#buscador-rag)
+- [Máquina de estados](#máquina-de-estados)
 
 ---
 
@@ -88,9 +89,19 @@ zoco-cortex/
 ├── README.md
 ├── SPEC_REVIEW.md          # Revisión crítica de la especificación (Parte 3)
 │
+├── buscador.py             # Buscador RAG (Parte 1)
+├── estados.py              # Máquina de estados IA-humano (Parte 3)
+│
 ├── questions.jsonl         # 20 preguntas de evaluación RAG
 ├── ventas.json             # Dataset de ventas ficticias (35 días)
 ├── reclamos.json           # Base de reclamos (inicialmente vacía)
+│
+├── cache/
+│   └── embeddings.json     # Caché de embeddings (SHA-256 por chunk)
+│
+├── tests/
+│   ├── test_buscador.py    # Tests del buscador RAG (28 tests)
+│   └── test_estados.py     # Tests de la máquina de estados (57 tests)
 │
 └── docs/
     └── DOC-01.md … DOC-12.md   # 12 documentos de ZocoTickets para el buscador
@@ -98,12 +109,12 @@ zoco-cortex/
 
 ### Incorporación progresiva
 
-| Rama               | Contenido que se agrega                                          |
-|--------------------|------------------------------------------------------------------|
-| `feature/rag`      | `buscador.py`, `tests/test_buscador.py`, documentación RAG      |
-| `feature/agente`   | `agente.py`, `main.py`, `tests/test_agente.py`, documentación   |
-| `feature/estados`  | `estados.py`, `tests/test_estados.py`, documentación            |
-| `feature/evaluacion` | `evaluacion.py`, `evaluacion_llm.py`, tests, resultados, conclusiones |
+| Rama               | Contenido incorporado                                            | Estado      |
+|--------------------|------------------------------------------------------------------|-------------|
+| `feature/rag`      | `buscador.py`, `tests/test_buscador.py`, documentación RAG      | ✓ integrado |
+| `feature/estados`  | `estados.py`, `tests/test_estados.py`, documentación            | ✓ integrado |
+| `feature/agente`   | `agente.py`, `main.py`, `tests/test_agente.py`, documentación   | pendiente   |
+| `feature/evaluacion` | `evaluacion.py`, resultados, conclusiones                      | pendiente   |
 
 ---
 
@@ -269,3 +280,99 @@ Los tests no realizan llamadas a la API de OpenAI. Los tests de caché verifican
 **Estrategia predeterminada `hibrida`:** la combinación vectorial + BM25 sin penalización de vigencia obtiene el mejor balance entre precisión semántica y coincidencia léxica, y evita excluir documentos históricos válidos.
 
 **urllib.request en lugar del SDK de OpenAI:** la prueba técnica prohíbe el uso de librerías de retrieval y valora las implementaciones desde cero. Usar la biblioteca estándar para las llamadas HTTP mantiene las dependencias mínimas (`numpy` y `pytest`) y hace explícito el contrato de la API.
+
+---
+
+## Máquina de estados
+
+El módulo `estados.py` implementa la máquina de estados IA-humano que controla quién responde en cada turno de la conversación: la IA de forma autónoma, la IA con supervisión, un operador humano, o nadie (conversación bloqueada).
+
+### Estados
+
+| Estado    | Significado |
+|-----------|-------------|
+| `AUTO`    | La IA responde y ejecuta acciones de forma autónoma. |
+| `SUGGEST` | La IA redacta borradores; el operador los aprueba antes de enviarlos al cliente. |
+| `HUMAN`   | Un operador humano controla la conversación. La IA está completamente inactiva. |
+| `BLOCKED` | La conversación está bloqueada por abuso. Nadie responde hasta que el supervisor desbloquee. |
+
+### Tabla de transiciones
+
+| Estado actual | Evento                  | Nuevo estado |
+|---------------|-------------------------|--------------|
+| AUTO          | operator_takeover       | HUMAN        |
+| AUTO          | customer_requests_human | HUMAN        |
+| AUTO          | low_confidence          | SUGGEST      |
+| AUTO          | abuse_detected          | BLOCKED      |
+| AUTO          | out_of_hours_started    | AUTO         |
+| SUGGEST       | operator_takeover       | HUMAN        |
+| SUGGEST       | operator_release        | AUTO         |
+| SUGGEST       | abuse_detected          | BLOCKED      |
+| SUGGEST       | out_of_hours_started    | AUTO         |
+| HUMAN         | operator_release        | AUTO         |
+| HUMAN         | abuse_detected          | BLOCKED      |
+| HUMAN         | out_of_hours_started    | AUTO         |
+| BLOCKED       | supervisor_unblock      | AUTO         |
+
+Toda combinación `(estado, evento)` no listada lanza `TransicionInvalidaError`. Las transiciones no definidas nunca se ignoran en silencio.
+
+### Reglas de funcionamiento
+
+- **En HUMAN:** la IA no genera respuestas ni ejecuta ninguna herramienta.
+- **En SUGGEST:** la IA puede consultar documentación y ventas, pero `crear_reclamo` requiere aprobación explícita del operador.
+- **Fuera del horario de atención:** `out_of_hours_started` devuelve el control a la IA (→ AUTO desde AUTO/SUGGEST/HUMAN). El agente informa al cliente la franja horaria de atención humana.
+- **En BLOCKED:** ningún actor —ni el cliente, ni el operador— puede continuar la conversación hasta que el supervisor desbloquee.
+
+### Seguridad y supervisor
+
+El desbloqueo desde `BLOCKED` está protegido en dos capas:
+
+1. **`estados.transicionar()`:** el evento `supervisor_unblock` solo se acepta cuando `actor="supervisor"` (case-sensitive, sin espacios). Cualquier otro valor lanza `TransicionInvalidaError` sin cambiar el estado.
+
+2. **`agente._verificar_supervisor()`** (disponible en `feature/agente`): antes de llamar a `transicionar`, verifica el `SUPERVISOR_PIN` del entorno. Si el PIN está vacío o es incorrecto, el comando `!unblock` es rechazado y nunca se llama a `transicionar`.
+
+### Registro de transiciones
+
+Cada transición exitosa queda registrada en memoria con cinco campos:
+
+```json
+{
+  "estado_anterior": "AUTO",
+  "estado_nuevo": "BLOCKED",
+  "evento": "abuse_detected",
+  "actor": "sistema",
+  "fecha": "2026-10-26T14:32:11"
+}
+```
+
+El historial puede persistirse en disco con `estados.guardar_historial(path)`.
+
+### Horario de atención
+
+La constante `HORARIO_ATENCION_HUMANA` en `estados.py` define la franja informada al cliente cuando `out_of_hours_started` se dispara. El valor actual es `"lunes a viernes de 9:00 a 18:00 (hora Argentina)"` y debe ajustarse al acuerdo de servicio de ZocoTickets.
+
+### Cómo ejecutar los tests
+
+```bash
+# Activar el entorno virtual
+.venv\Scripts\Activate.ps1         # Windows PowerShell
+source .venv/bin/activate          # Linux/macOS
+
+# Ejecutar solo los tests de la máquina de estados
+python -m pytest tests/test_estados.py -v
+
+# Ejecutar todos los tests del proyecto
+python -m pytest -v
+```
+
+**57 tests pasan, 9 tests de integración con el agente quedan marcados como `skip`** hasta que `agente.py` sea incorporado en `feature/agente`.
+
+### Decisiones técnicas
+
+**Sin librerías de máquinas de estados:** la especificación y la consigna exigen implementación propia. La máquina se basa en un diccionario `TRANSICIONES: dict[tuple[str, str], str]` que mapea `(estado_actual, evento)` → `estado_nuevo`. Es determinista, exhaustivo y auditable.
+
+**Contradicciones resueltas:** la especificación original contiene tres contradicciones (C1, C2, C3) documentadas en `SPEC_REVIEW.md`. Las resoluciones priorizan seguridad sobre conveniencia operativa: `BLOCKED` solo puede salir por `supervisor_unblock`, y `abuse_detected` desde `HUMAN` va a `BLOCKED` (no permanece en `HUMAN`).
+
+**Actor como string controlado:** el campo `actor` en el historial es un string libre, pero la autorización de `supervisor_unblock` está implementada mediante `_ACTORES_REQUERIDOS` en código. En producción debe estar respaldado por autenticación real; la verificación por PIN (`SUPERVISOR_PIN`) es la capa de control disponible en la demo interactiva.
+
+**Estado global de módulo:** la máquina usa variables de módulo (`_estado_actual`, `_historial`, `_fuera_de_horario`). `reset_estado()` permite reiniciar entre tests sin instanciar objetos. La integración con el agente usa el módulo directamente mediante imports, siguiendo el patrón del proyecto.
