@@ -11,6 +11,7 @@ Prueba técnica — Pasante de IA, ZOCO Servicios de Pago.
 - [Requisitos](#requisitos)
 - [Instalación](#instalación)
 - [Configuración](#configuración)
+- [Inicio rápido](#inicio-rápido)
 - [Estructura del proyecto](#estructura-del-proyecto)
 - [Datos y documentos](#datos-y-documentos)
 - [Buscador RAG](#buscador-rag)
@@ -30,7 +31,7 @@ Prueba técnica — Pasante de IA, ZOCO Servicios de Pago.
 
 ```bash
 # 1. Clonar el repositorio
-git clone <url-del-repositorio>
+git clone https://github.com/juanjavier1001/zoco-cortex.git
 cd zoco-cortex
 
 # 2. Crear entorno virtual
@@ -72,6 +73,37 @@ TOOL_FAILURE_RATE=0.0
 # Si no se configura, el comando supervisor_unblock queda deshabilitado
 SUPERVISOR_PIN=
 ```
+
+---
+
+## Inicio rápido
+
+Una vez instaladas las dependencias y configurado el archivo `.env`, con el entorno virtual activado, ejecutá:
+
+```bash
+python main.py
+```
+
+El agente se iniciará en la consola y permitirá:
+
+* Consultar documentación de ZocoTickets mediante el buscador RAG.
+* Consultar ventas del comercio.
+* Registrar reclamos con confirmación.
+* Interactuar con la máquina de estados IA-humano.
+
+Para finalizar la aplicación, escribir `salir`.
+
+### Ejecutar los tests
+
+Para verificar el funcionamiento del sistema:
+
+```bash
+python -m pytest tests/ -q
+```
+
+El proyecto cuenta con 170 tests automatizados que no requieren llamadas reales a OpenAI.
+
+Para consultar la arquitectura, las herramientas, las políticas de seguridad y los resultados de las evaluaciones, revisar las secciones correspondientes del README.
 
 ---
 
@@ -515,14 +547,21 @@ Los comandos `!` se procesan en `main()` antes de llegar al LLM:
 .venv\Scripts\Activate.ps1         # Windows PowerShell
 source .venv/bin/activate          # Linux/macOS
 
-# Cargar variables de entorno
+# Ejecutar el agente
+python main.py
+```
+
+`main.py` carga automáticamente las variables desde `.env` al iniciar. No es necesario exportarlas manualmente si el archivo `.env` está configurado. Si preferís usar variables del sistema, también se respetan:
+
+```bash
 # Windows (PowerShell):
 $env:OPENAI_API_KEY = "<tu-clave>"
 $env:SUPERVISOR_PIN = "<pin-supervisor>"    # opcional
 $env:TOOL_FAILURE_RATE = "0.0"             # opcional
 
-# Ejecutar el agente
-python main.py
+# Linux/macOS:
+export OPENAI_API_KEY=<tu-clave>
+export SUPERVISOR_PIN=<pin-supervisor>     # opcional
 ```
 
 Al iniciar, el agente muestra el estado actual, el modelo y el estado del PIN de supervisor. Los comercios interactúan por consola. El operador puede usar comandos `!` en cualquier momento.
